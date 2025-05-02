@@ -1,0 +1,12 @@
+langchain
+langchain-openai
+python-dotenv
+#pydantic
+docker
+docker-compose
+langchain-community
+langchain-core
+PyYAML
+boto3
+flask
+uvicorn[standard]==0.29.0

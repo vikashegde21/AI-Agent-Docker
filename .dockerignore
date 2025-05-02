@@ -1,0 +1,40 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Virtual environment
+cont/
+venv/
+.env
+
+# Docker output and build artifacts
+docker_output/
+*.log
+*.egg-info/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Sensitive files
+*.pem
+**/credentials/
+**/secrets/
+.ssh/
+
+# Node and frontend
+node_modules/
+
+# Test and coverage
+.coverage
+coverage.xml
+htmlcov/
+
+# Misc
+*.swp
+*.swo
