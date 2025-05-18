@@ -10,3 +10,4 @@ PyYAML
 boto3
 flask
 uvicorn[standard]==0.29.0
+#langgraph
