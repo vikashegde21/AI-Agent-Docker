@@ -16,7 +16,6 @@ import logging
 from dotenv import load_dotenv
 import subprocess
 
-# Add Docker SDK import
 import docker
 
 from langchain.prompts import ChatPromptTemplate
@@ -25,21 +24,17 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_community.callbacks.manager import get_openai_callback
 
-# Add boto3 import
 import boto3
 
-# Add langchain agents import
 from langchain.agents import initialize_agent, Tool, AgentType
 from langchain_core.tools import tool
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger('docker-agent')
 
-# Load environment variables
 load_dotenv()
 
 class DockerAgent:
@@ -54,7 +49,7 @@ class DockerAgent:
             temperature: The temperature setting for the model
             verbose: Whether to show verbose output
         """
-        # Setup OpenAI client
+        
         self.api_key = os.environ.get("OPENAI_API_KEY")
         if not self.api_key:
             raise ValueError("OPENAI_API_KEY environment variable not set")
@@ -64,7 +59,7 @@ class DockerAgent:
         self.temperature = temperature
         self.verbose = verbose
         
-        # Initialize LangChain OpenAI client
+    
         self.llm = ChatOpenAI(
             base_url=self.endpoint,
             api_key=self.api_key,
@@ -72,13 +67,10 @@ class DockerAgent:
             temperature=self.temperature
         )
         
-        # Define the output schema for structured responses
         self.output_parser = self._create_output_parser()
         
-        # Setup the system prompt
         self.system_prompt = self._create_system_prompt()
         
-        # Setup the RunnableSequence
         self.chain = self._create_chain()
     
     def _create_output_parser(self):
@@ -95,7 +87,6 @@ class DockerAgent:
     def _create_system_prompt(self):
         """Create the system prompt for the Docker container generator."""
         format_instructions = self.output_parser.get_format_instructions()
-        # Escape curly braces for ChatPromptTemplate
         format_instructions = format_instructions.replace("{", "{{").replace("}", "}}")
         return f"""You are an expert Docker container developer and DevOps engineer. Your task is to create complete, development-ready Docker container applications based on user requirements.
 
@@ -135,9 +126,83 @@ If a docker-compose.yml is needed, include it in the docker_compose field.
             ("system", self.system_prompt),
             ("human", "{query}")
         ])
-        # RunnableSequence: prompt | llm | output_parser
+        
         return prompt | self.llm | self.output_parser
     
+    def _fix_multiline_run_instructions(self, dockerfile: str) -> str:
+        """
+        Fix multi-line RUN instructions so that no line starts with '&&'.
+        Joins lines so that '&&' is always at the end of the previous line.
+        """
+        lines = dockerfile.splitlines()
+        fixed_lines = []
+        in_run = False
+        buffer = []
+        for line in lines:
+            stripped = line.lstrip()
+            if stripped.startswith('RUN '):
+                if in_run and buffer:
+                    fixed_lines.append(' \
+    '.join(buffer))
+                    buffer = []
+                in_run = True
+                buffer.append(stripped)
+            elif in_run and (stripped.startswith('&&') or stripped == '\\'):
+                
+                if buffer:
+                    buffer[-1] = buffer[-1].rstrip(' \\') + ' ' + stripped
+                else:
+                    buffer.append(stripped)
+            elif in_run and (stripped.startswith('    &&') or stripped.startswith('&&')):
+                
+                if buffer:
+                    buffer[-1] = buffer[-1].rstrip(' \\') + ' ' + stripped.lstrip()
+                else:
+                    buffer.append(stripped.lstrip())
+            elif in_run and (stripped == '' or not stripped.startswith('&&')):
+                
+                if buffer:
+                    fixed_lines.append(' \
+    '.join(buffer))
+                    buffer = []
+                in_run = False
+                fixed_lines.append(line)
+            else:
+                fixed_lines.append(line)
+        if in_run and buffer:
+            fixed_lines.append(' \
+    '.join(buffer))
+        return '\n'.join(fixed_lines)
+
+    def _ensure_env_path(self, dockerfile: str) -> str:
+        """
+        Ensure ENV PATH includes /app/.local/bin and ENV PYTHONPATH includes /app/.local/lib/python3.11/site-packages in the Dockerfile after pip install.
+        """
+        lines = dockerfile.splitlines()
+        new_lines = []
+        inserted_path = False
+        inserted_pythonpath = False
+        python_version = "3.13"  # Update if you use a different Python version
+        for i, line in enumerate(lines):
+            new_lines.append(line)
+            
+            if (
+                (not inserted_path or not inserted_pythonpath)
+                and ("pip install" in line or "pip3 install" in line)
+            ):
+                if not any("ENV PATH" in l for l in lines):
+                    new_lines.append('ENV PATH="/app/.local/bin:$PATH"')
+                    inserted_path = True
+                if not any("ENV PYTHONPATH" in l for l in lines):
+                    new_lines.append(f'ENV PYTHONPATH="/app/.local/lib/python{python_version}/site-packages"')
+                    inserted_pythonpath = True
+        
+        if not inserted_path and not any("ENV PATH" in l for l in lines):
+            new_lines.append('ENV PATH="/app/.local/bin:$PATH"')
+        if not inserted_pythonpath and not any("ENV PYTHONPATH" in l for l in lines):
+            new_lines.append(f'ENV PYTHONPATH="/app/.local/lib/python{python_version}/site-packages"')
+        return "\n".join(new_lines)
+
     def process_query(self, query: str) -> Dict:
         """
         Process a user query and generate Docker container application.
@@ -149,33 +214,54 @@ If a docker-compose.yml is needed, include it in the docker_compose field.
             A dictionary containing the generated Dockerfile, application files, and instructions
         """
         logger.info(f"Processing query: {query}")
-        
         try:
             with get_openai_callback() as cb:
                 response = self.chain.invoke({"query": query})
-                result = response  # Already parsed by output_parser
-                
+                result = response  
+
                 if self.verbose:
                     logger.info(f"OpenAI API usage: {cb}")
+
                 
-                # Always ensure curl is installed in the Dockerfile
                 dockerfile_lines = result["dockerfile"].splitlines()
-                # Check if curl is already installed
                 curl_installed = any("apt-get install" in line and "curl" in line for line in dockerfile_lines)
                 if not curl_installed:
-                    # Find the first RUN apt-get install or after apt-get update
+                    # Find the first RUN apt-get update
                     insert_idx = None
                     for i, line in enumerate(dockerfile_lines):
                         if "apt-get update" in line:
-                            insert_idx = i + 1
+                            insert_idx = i
                             break
+                    curl_cmd = "apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*"
                     if insert_idx is not None:
-                        dockerfile_lines.insert(insert_idx, "RUN apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*")
+                        # Try to append to the existing RUN if possible
+                        line = dockerfile_lines[insert_idx]
+                        if line.strip().startswith("RUN"):
+                            # If it's a multi-line RUN ending with '\\', append to the last line of the block
+                            # Find the end of the RUN block
+                            end_idx = insert_idx
+                            for j in range(insert_idx, len(dockerfile_lines)):
+                                if not dockerfile_lines[j].rstrip().endswith("\\"):
+                                    end_idx = j
+                                    break
+                            # Append to the last line of the RUN block
+                            last_line = dockerfile_lines[end_idx]
+                            if last_line.rstrip().endswith("\\"):
+                                # Remove the trailing '\\' and append '&& curl_cmd \'
+                                dockerfile_lines[end_idx] = last_line.rstrip().rstrip('\\').rstrip() + f" && {curl_cmd} \\" 
+                            else:
+                                dockerfile_lines[end_idx] = last_line + f" && {curl_cmd}"
+                        else:
+                            # Not a RUN line, insert a new RUN after
+                            dockerfile_lines.insert(insert_idx + 1, f"RUN {curl_cmd}")
                     else:
-                        # If no apt-get update, add both
-                        dockerfile_lines.insert(1, "RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*")
+                        # If no apt-get update, add both after FROM
+                        dockerfile_lines.insert(1, f"RUN apt-get update && {curl_cmd}")
                     result["dockerfile"] = "\n".join(dockerfile_lines)
-                
+                # Fix multi-line RUN instructions
+                result["dockerfile"] = self._fix_multiline_run_instructions(result["dockerfile"])
+                # Ensure ENV PATH is set
+                result["dockerfile"] = self._ensure_env_path(result["dockerfile"])
                 return result
         except Exception as e:
             logger.error(f"Error processing query: {str(e)}")
@@ -191,31 +277,28 @@ If a docker-compose.yml is needed, include it in the docker_compose field.
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
 
-        # Do NOT create docker-compose.yml in the output directory
+        
         for fname, content in [
             ("Dockerfile", output["dockerfile"]),
             ("README.md", output.get("setup_instructions", ""))
         ]:
             if content and content.strip():
-                with open(output_path / fname, "w") as f:
+                with open(output_path / fname, "w", encoding="utf-8") as f:
                     f.write(content)
 
-        # Save app files
         for file_info in output["app_files"]:
             file_path = output_path / file_info["filename"]
             file_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(file_path, "w") as f:
+            with open(file_path, "w", encoding="utf-8") as f:
                 f.write(file_info["content"])
 
-        # Ensure requirements.txt exists
         req_path = output_path / "requirements.txt"
         if not req_path.exists():
-            with open(req_path, "w") as f:
+            with open(req_path, "w", encoding="utf-8") as f:
                 f.write("requests\n")
 
-        # Only create a minimal app.py if this is a Python project and no .py file is present
+        
         is_python_project = False
-        # Check if any app_files are .py or Dockerfile uses python base image
         for file_info in output["app_files"]:
             if file_info["filename"].endswith(".py"):
                 is_python_project = True
@@ -223,28 +306,25 @@ If a docker-compose.yml is needed, include it in the docker_compose field.
         if not is_python_project:
             dockerfile_path = output_path / "Dockerfile"
             if dockerfile_path.exists():
-                with open(dockerfile_path, "r") as df:
+                with open(dockerfile_path, "r", encoding="utf-8") as df:
                     for line in df:
                         if line.strip().lower().startswith("from python"):
                             is_python_project = True
                             break
         if is_python_project and not any(f["filename"].endswith(".py") for f in output["app_files"]):
             app_py = output_path / "app.py"
-            with open(app_py, "w") as f:
+            with open(app_py, "w", encoding="utf-8") as f:
                 f.write("import requests\nprint('Hello from a simple Python application!')\n")
 
-        # Always create a README.md in the output directory with setup and usage for the generated app
         readme_path = output_path / "README.md"
         if not readme_path.exists():
-            # Generate a simple README.md for the generated app
             app_port = 8000
             for file_info in output["app_files"]:
                 if file_info["filename"].endswith(".py") and "Flask" in file_info["content"]:
                     app_port = 5000
             readme_content = f"""# Generated Application\n\nThis is a generated application.\n\n## Setup\n\n1. Build the Docker image:\n   ```sh\n   docker build -t my-app .\n   ```\n2. Run the application:\n   ```sh\n   docker run -p {app_port}:{app_port} my-app\n   ```\n\nOr use Docker Compose:\n\n   ```sh\n   docker-compose up --build\n   ```\n\n## Usage\n\n- Visit: http://localhost:{app_port}/\n- Healthcheck: http://localhost:{app_port}/health\n"""
-            with open(readme_path, "w") as f:
+            with open(readme_path, "w", encoding="utf-8") as f:
                 f.write(readme_content)
-        # Always create a simple, minimal Dockerfile for any app if not present
         dockerfile_path = output_path / "Dockerfile"
         if not dockerfile_path.exists():
             app_file = "main.py"
@@ -284,13 +364,12 @@ If a docker-compose.yml is needed, include it in the docker_compose field.
                     expose = "EXPOSE 3000"
                     health = "HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \\\n  CMD curl --fail http://localhost:3000/health || exit 1"
                     cmd = f'CMD ["node", "{app_file}"]'
-            # Only add static assets COPY if static dir exists
             static_dir = output_path / "static"
             static_copy = ""
             if static_dir.exists() and static_dir.is_dir():
                 static_copy = "COPY --from=builder /app/static /app/static\n"
-            dockerfile_content = f"FROM {base_image}\n\nRUN apt-get update \\\n    && apt-get install -y --no-install-recommends curl \\\n    && rm -rf /var/lib/apt/lists/*\n\nWORKDIR /app\n\n{copy_reqs}\n{install_cmd}\n\n{copy_code}\n\n{expose}\n\n{health}\n\n{cmd}\n{static_copy}"
-            with open(dockerfile_path, "w") as f:
+            dockerfile_content = f"FROM {base_image}\n\nRUN apt-get update \\\n    && apt-get install -y --no-install-recommends curl \\\n    && rm -rf /var/lib/apt/lists/*\n\nWORKDIR /app\n\n{copy_reqs}\n{install_cmd}\nENV PATH=\"/app/.local/bin:$PATH\"\n\n{copy_code}\n\n{expose}\n\n{health}\n\n{cmd}\n{static_copy}"
+            with open(dockerfile_path, "w", encoding="utf-8") as f:
                 f.write(dockerfile_content)
 
         logger.info(f"Docker container files saved to {output_path.absolute()} and Dockerfile/docker-compose.yml also saved to project root.")
@@ -310,17 +389,14 @@ If a docker-compose.yml is needed, include it in the docker_compose field.
             logger.error("Docker Hub credentials not found in .env file.")
             return
         full_image_name = f"{docker_username}/{image_name}:{tag}"
-        # Build the Docker image with volume and network support
         build_cmd = [
             "docker", "build", "-t", full_image_name, output_dir
         ]
         logger.info(f"Building Docker image: {' '.join(build_cmd)}")
         subprocess.run(build_cmd, check=True)
-        # Login to Docker Hub
         login_cmd = ["docker", "login", "-u", docker_username, "-p", docker_password]
         logger.info("Logging in to Docker Hub...")
         subprocess.run(login_cmd, check=True)
-        # Push the image
         push_cmd = ["docker", "push", full_image_name]
         logger.info(f"Pushing Docker image: {full_image_name}")
         subprocess.run(push_cmd, check=True)
@@ -351,7 +427,6 @@ If a docker-compose.yml is needed, include it in the docker_compose field.
         except subprocess.CalledProcessError as e:
             logger.error(f"Docker build failed: {e}")
             return {"error": "Docker build failed", "details": str(e)}
-        # Find the exposed port from the Dockerfile if possible
         dockerfile_path = Path(output_dir) / "Dockerfile"
         container_port = str(port)
         if dockerfile_path.exists():
@@ -362,7 +437,6 @@ If a docker-compose.yml is needed, include it in the docker_compose field.
                         if len(parts) == 2 and parts[1].isdigit():
                             container_port = parts[1]
                             break
-        # Create a named volume and network for the container
         volume_name = f"{image_name}_data"
         network_name = f"{image_name}_net"
         try:
@@ -372,8 +446,7 @@ If a docker-compose.yml is needed, include it in the docker_compose field.
         try:
             client.networks.create(name=network_name, driver="bridge")
         except Exception:
-            pass  # Network may already exist
-        # Run the container with port mapping, volume, and network
+            pass  
         logger.info(f"Running container from image: {full_image_name} (host port {port} -> container port {container_port})")
         try:
             container = client.containers.run(
@@ -411,12 +484,11 @@ If a docker-compose.yml is needed, include it in the docker_compose field.
             "state": container.attrs.get("State", {}),
             "health": container.attrs.get("State", {}).get("Health", {}),
         }
-        # Fetch logs if not healthy or exited
         logs = container.logs().decode(errors="replace")
         if health_status == "unhealthy" or details["state"].get("Status") == "exited":
             details["logs"] = logs
             logger.warning("Container is unhealthy or exited. Logs:\n" + logs)
-            # Check for uvicorn ModuleNotFoundError and provide a clear error
+           
             if "ModuleNotFoundError: No module named 'uvicorn'" in logs:
                 details["error"] = (
                     "The container failed because the 'uvicorn' module is not installed. "
@@ -473,7 +545,6 @@ class SimpleAIAgent:
         )
 
     def _get_tools(self):
-        # Example tool: list files in a directory
         @tool
         def list_files(path: str) -> str:
             """List files in a directory."""
@@ -481,7 +552,6 @@ class SimpleAIAgent:
                 return "\n".join(os.listdir(path))
             except Exception as e:
                 return str(e)
-        # Shell command tool
         @tool
         def run_shell(command: str) -> str:
             """Run a shell command and return its output."""
@@ -490,7 +560,6 @@ class SimpleAIAgent:
                 return result.stdout if result.returncode == 0 else result.stderr
             except Exception as e:
                 return str(e)
-        # Docker container interaction tool
         @tool
         def list_docker_containers(input: str) -> str:
             """List running Docker containers (input is ignored, for compatibility)."""
@@ -512,7 +581,6 @@ class SimpleAIAgent:
                 return f"Stopped container: {input.strip()}"
             except Exception as e:
                 return f"Docker error: {e}"
-        # Add more tools as needed
         return [list_files, run_shell, list_docker_containers, stop_docker_container]
 
     def run(self, task: str):
@@ -539,7 +607,6 @@ def main():
     args = parser.parse_args()
     
     try:
-        # Create the Docker agent
         agent = DockerAgent(
             model_name=args.model,
             temperature=args.temperature,
@@ -564,7 +631,6 @@ def main():
                 print("-" * 50)
                 print(output["setup_instructions"])
         else:
-            # Process the query from command line argument
             if not args.query and not args.agent_task:
                 parser.print_help()
                 sys.exit(1)
@@ -593,12 +659,10 @@ def main():
             print("\nSetup Instructions:")
             print("-" * 50)
             print(output["setup_instructions"])
-            # Build and push Docker image automatically
             try:
                 agent.build_and_push_docker_image(str(output_path), image_name="flask-redis-app", tag="latest")
             except Exception as e:
                 logger.error(f"Docker build/push failed: {str(e)}")
-            # If --run-and-report flag is set, run container and output JSON report
             if args.run_and_report:
                 try:
                     report_path = str(Path(args.output_dir) / "container_report.json")
