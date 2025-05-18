@@ -1,0 +1,54 @@
+{
+  "id": "a0cc51fdb67c899d9d938ed07b2f004720104ace8d75ec53a3272b0e2afddf56",
+  "name": "stoic_grothendieck",
+  "status": "running",
+  "image": [
+    "vikashegde21/flask-redis-app:latest"
+  ],
+  "ports": {
+    "8000/tcp": [
+      {
+        "HostIp": "0.0.0.0",
+        "HostPort": "8000"
+      }
+    ]
+  },
+  "created": "2025-05-18T17:20:46.542824619Z",
+  "state": {
+    "Status": "running",
+    "Running": true,
+    "Paused": false,
+    "Restarting": false,
+    "OOMKilled": false,
+    "Dead": false,
+    "Pid": 775,
+    "ExitCode": 0,
+    "Error": "",
+    "StartedAt": "2025-05-18T17:20:48.709892579Z",
+    "FinishedAt": "0001-01-01T00:00:00Z",
+    "Health": {
+      "Status": "healthy",
+      "FailingStreak": 0,
+      "Log": [
+        {
+          "Start": "2025-05-18T17:20:55.730485931Z",
+          "End": "2025-05-18T17:20:56.793238093Z",
+          "ExitCode": 0,
+          "Output": "  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current\n                                 Dload  Upload   Total   Spent    Left  Speed\n\r  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0\r100    15  100    15    0     0    148      0 --:--:-- --:--:-- --:--{\"status\":\"ok\"}:--   150\n"
+        }
+      ]
+    }
+  },
+  "health": {
+    "Status": "healthy",
+    "FailingStreak": 0,
+    "Log": [
+      {
+        "Start": "2025-05-18T17:20:55.730485931Z",
+        "End": "2025-05-18T17:20:56.793238093Z",
+        "ExitCode": 0,
+        "Output": "  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current\n                                 Dload  Upload   Total   Spent    Left  Speed\n\r  0     0    0     0    0     0      0      0 --:--:-- --:--:-- --:--:--     0\r100    15  100    15    0     0    148      0 --:--:-- --:--:-- --:--{\"status\":\"ok\"}:--   150\n"
+      }
+    ]
+  }
+}
